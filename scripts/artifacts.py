@@ -51,7 +51,7 @@ import tempfile
 import zlib
 from typing import Any
 
-ARTIFACT_VERSION = "1.1.0"
+ARTIFACT_VERSION = "1.2.0"
 
 # 生成器标识（写进 SVG <metadata> 与合规检查记录，评审可追溯到具体模块）
 _GENERATOR_NAME = "engine/artifacts.py"
@@ -149,7 +149,9 @@ _TRAIL_VERB = re.compile(
 )
 _PARTICLES = ("通过", "经过", "然后", "接着", "随后", "最后", "再将", "再把",
               "将", "把", "由", "从", "至", "到", "向", "与", "和", "及",
-              "使用", "采用", "利用")
+              "使用", "采用", "利用",
+              # 前导指示词与"组成"类谓语：避免实体名带上"该/组成"等非名词成分
+              "该", "本", "此", "组成", "构成", "包括", "包含")
 
 
 def _is_cjk(text: str) -> bool:
@@ -237,7 +239,8 @@ _CONNECTORS = {
              "pumped into", "transferred to", "transferred into",
              "supplied to", "flowed into", "passed into", "delivered to",
              "routed to", "added to", "loaded into",
-             "送入", "注入", "通入", "导入", "加入", "输送到", "输入到"],
+             "送入", "注入", "通入", "导入", "加入", "输送到", "输入到",
+             "接入", "进入", "流入", "通向", "送至"],
     "sequence": ["is followed by", "are followed by", "was followed by",
                  "were followed by", "followed by",
                  "之后", "随后", "然后", "接着", "再", "最后"],
@@ -488,9 +491,38 @@ def _entity_key(label: str) -> str:
     return " ".join(words[-2:]) if words else s
 
 
+def _step_label(text: str) -> str:
+    """步骤名保留动词短语原样（不剥前导介词，"向反应器通入"才是动作）。"""
+    s = re.sub(r"\s+", " ", (text or "").strip()).strip(" 　:：.、-—")
+    if _is_cjk(s):
+        return s[:40]
+    words = s.split()
+    return " ".join(words[:8])
+
+
+def _join_tokens(parts: list[str]) -> str:
+    """把词序列拼回短语：中文按字连写，英文词之间保留一个空格。"""
+    out = ""
+    for t in parts:
+        if not t:
+            continue
+        if out and not (_is_cjk(out[-1]) and _is_cjk(t[0])):
+            out += " "
+        out += t
+    return out
+
+
+# 取名词短语时遇到这些中文虚词就停（保守集合：只收几乎不会出现在
+# 装置/材料名内部的字，避免把"过滤器""内腔"之类的名字截断）。
+_CJK_FUNC = set("在向将把由从至到与和及的了并且以对为是再经")
+_CJK_TAIL_STOP = set("经通入于给被让使把向在将由从至到与和及的了并且以对为是")
+
+
 def _left_phrase(tokens: list[str], end: int, max_words: int = 6) -> str:
     """取关键词左侧的名词短语（向前找，遇到动词/介词/连词/逗号就停）。"""
-    words = tokens[max(0, end - max_words):end]
+    window = max_words * 3 if any(_is_cjk(t) for t in tokens[max(0, end - 1):end]) \
+        else max_words
+    words = tokens[max(0, end - window):end]
     phrase: list[str] = []
     for w in reversed(words):
         core = w.strip(",.;:()[]\"'")
@@ -504,20 +536,24 @@ def _left_phrase(tokens: list[str], end: int, max_words: int = 6) -> str:
             continue
         if low in _STOP_PREP or low in _LEAD_JUNK:
             break
+        if _is_cjk(core) and core in _CJK_FUNC:
+            break
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9\-]*", core) or _is_cjk(core) \
                 or re.fullmatch(r"[\d.]+", core):
             phrase.append(core)
-            if len(phrase) >= 5:
+            if len(phrase) >= (12 if _is_cjk(core) else 5):
                 break
         else:
             break
     phrase.reverse()
-    return _noun_phrase(" ".join(phrase))
+    return _noun_phrase(_join_tokens(phrase))
 
 
 def _right_phrase(tokens: list[str], start: int, max_words: int = 6) -> str:
     """取关键词右侧的名词短语（遇到介词/连词/动词就停）。"""
-    words = tokens[start:start + max_words]
+    window = max_words * 2 if any(_is_cjk(t) for t in tokens[start:start + 1]) \
+        else max_words
+    words = tokens[start:start + window]
     phrase: list[str] = []
     started = False
     for w in words:
@@ -533,21 +569,23 @@ def _right_phrase(tokens: list[str], start: int, max_words: int = 6) -> str:
             started = True
         if low in _STOP_PREP or low in _LEAD_JUNK:
             break
+        if _is_cjk(core) and core in _CJK_TAIL_STOP:
+            break
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9\-]*", core) or _is_cjk(core) \
                 or re.fullmatch(r"[\d.]+", core):
             phrase.append(core)
         else:
             break
-        if len(phrase) >= 5:
+        if len(phrase) >= (12 if _is_cjk(core) else 5):
             break
-    return _noun_phrase(" ".join(phrase))
+    return _noun_phrase(_join_tokens(phrase))
 
 
 def _right_list(tokens: list[str], start: int, max_items: int = 6) -> list[str]:
     """取关键词右侧的**一串**部件（逗号/顿号/and 分隔）。"""
     items: list[str] = []
     cur: list[str] = []
-    for w in tokens[start:start + 24]:
+    for w in tokens[start:start + 60]:
         core = w.strip(",.;:()[]\"'")
         if not core:
             continue
@@ -555,15 +593,15 @@ def _right_list(tokens: list[str], start: int, max_items: int = 6) -> list[str]:
         if low in _STOP_PREP and not cur:
             break
         if core == "," or core == "、" or core == "，":
-            item = _noun_phrase(" ".join(cur))
+            item = _noun_phrase(_join_tokens(cur))
             if item:
                 items.append(item)
             cur = []
             if len(items) >= max_items:
                 break
             continue
-        if low == "and" or low == "或" or low == "以及" or low == "and" :
-            item = _noun_phrase(" ".join(cur))
+        if low == "and" or low in ("或", "以及", "和", "与", "及"):
+            item = _noun_phrase(_join_tokens(cur))
             if item:
                 items.append(item)
             cur = []
@@ -575,13 +613,15 @@ def _right_list(tokens: list[str], start: int, max_items: int = 6) -> list[str]:
             cur.append(core)
         else:
             break
-        if len(cur) >= 5:
-            item = _noun_phrase(" ".join(cur))
+        # 中文部件不做"每 5 字断一次"的切分（否则一个部件会被拆成两个节点）；
+        # 英文多词部件仍然在 5 个词处截断，避免吞掉整句。
+        if len(cur) >= 5 and not _is_cjk("".join(cur)):
+            item = _noun_phrase(_join_tokens(cur))
             if item:
                 items.append(item)
             cur = []
     if cur:
-        item = _noun_phrase(" ".join(cur))
+        item = _noun_phrase(_join_tokens(cur))
         if item:
             items.append(item)
     return [i for i in items if len(i) >= 2][:max_items]
@@ -830,7 +870,9 @@ def extract_structure(paras: list[dict[str, Any]],
             "step_id": f"ST{len(steps) + 1:02d}",
             "order": len(steps) + 1,
             "marker": re.sub(r"\s+", " ", m.group(0).strip()),
-            "label": _trim_label(body, 40),
+            "label": _step_label(
+                (re.split(r"[，,；;。]", body)[0].strip()
+                 if len(re.split(r"[，,；;。]", body)[0].strip()) >= 8 else body)),
             "paragraph_id": s["paragraph_id"],
             "source_id": s["source_id"],
             "quote": s["text"][:220],
@@ -881,9 +923,15 @@ def extract_structure(paras: list[dict[str, Any]],
                 right = _right_phrase(words, hi + 1)
                 if not left or not right:
                     continue
-                _add_relation(_entity(left, "node", s), _entity(right, "node", s),
-                              kind, f"{kind} stated in the material text "
-                                    f"(keyword: {kw!r})", s)
+                a = _entity(left, "node", s)
+                b = _entity(right, "node", s)
+                # "向/往 X 通入 Y" 的真实流向是 Y → X：介词在左短语之前时反向。
+                # 只对明确写成介词结构的句子反向，不对 "将 A 通入 B" 猜方向。
+                prefix = text[max(0, cs - 10):cs]
+                if kind == "flow" and re.search(r"[向往][^，。；,;]{1,8}$", prefix):
+                    a, b = b, a
+                _add_relation(a, b, kind, f"{kind} stated in the material text "
+                                          f"(keyword: {kw!r})", s)
 
     # --- 步骤主体（把步骤也变成可排布的节点） ----------------------------
     for st in steps:
