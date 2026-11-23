@@ -1,0 +1,22 @@
+{
+ "case_id": "demo-case-0001",
+ "topic_id": "challenge-9034312d",
+ "topic_title": "实验装置与技术路线图",
+ "difficulty": 1,
+ "domain": "graphics",
+ "task_instruction": "演示用例：请读取同目录下的材料文件，给出带原文证据的结论，并把无法判断的部分写入 uncertainties。",
+ "output_contract": {
+  "editable_source": "可编辑源文件 :: 示意图、机制图、流程图或图表的分层源文件；完成标准：实体、关系、图例和数据映射正确",
+  "exports": "导出件 :: 目标格式、尺寸、分辨率、字体和色彩检查；完成标准：可在目标场景打开和使用",
+  "provenance_and_changes": "来源与修改记录 :: 元素来源、版本、数据映射和人工确认；完成标准：关键图面可核验，异常有说明",
+  "case_id": "",
+  "compliance_checks": "",
+  "content_map": "",
+  "exceptions": "",
+  "export_artifact": "",
+  "status": ""
+ },
+ "evaluation": {
+  "mode": "demo"
+ }
+}
