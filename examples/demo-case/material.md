@@ -1,9 +1,9 @@
-# Demo material
+# 演示材料（合成用例）
 
-The electrode retained 92 % of its initial capacity after 500 cycles at 1 A/g.
-All measurements were repeated three times and the error was below 4 %.
+> 本文件为离线演示而编写，内容为合成数据，仅用于检验 Skill 的抽取与绘图链路。
 
-Figure 2 presents the cycling stability, and Table 1 lists the sample names.
-The overall mass loading was 2.5 mg/cm2.
+本材料描述一套连续流光催化降解装置及其三段式技术路线。
 
-This demo file is synthetic and is used only to exercise the Skill offline.
+装置由四个主要部件组成：进料瓶、计量泵、光反应器与产物收集瓶。进料瓶中的模拟废水经计量泵进入光反应器；光反应器内置紫外灯与催化剂膜，反应液在光反应器中停留 20 min；反应后的产物经出料管流入产物收集瓶。光反应器外壁配有循环水夹套，循环水夹套与恒温槽相连以维持 25 ℃。产物收集瓶的出口处串联一台在线紫外检测器，用于记录出水吸光度。
+
+技术路线分为三步。第一步，配制 50 mg/L 的模拟废水，并将 pH 调节至 6.5。第二步，以 2 mL/min 的流量把废水泵入光反应器，开启紫外灯（365 nm）照射 20 min。第三步，将出水收入产物收集瓶，取样测定剩余浓度并计算去除率。
