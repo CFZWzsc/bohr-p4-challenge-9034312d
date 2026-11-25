@@ -3,10 +3,10 @@
 
 它是「平台形状」的最小完整实现，也是十个 Skill 共享的骨架：
 
-    python /skills/weekly-skill/scripts/sk_entry.py \
+    python /skills/bohr-graphics/scripts/sk_entry.py \
         --input /input --work /app/work --out /app/output
 
-行为（与 82 分实战产物的 `pl_entry.py` 同构）：
+行为：
 
 1. 读 `/input/case.json` → 拿 `case_id` 与 `output_contract`；
 2. 读真实材料文件（**不靠标签猜内容**）；
