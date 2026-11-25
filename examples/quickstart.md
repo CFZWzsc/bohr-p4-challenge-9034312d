@@ -1,20 +1,20 @@
 # 快速上手
 
-本 Skill 在 DeepSeek Harness 中被加载为 `/skills/weekly-skill`。
-Harness 在每个案例上执行：
+本 Skill 在 DeepSeek Harness 中被加载为 `/skills/bohr-graphics`。
+Harness 在每个案例上执行（单次运行即产出完整交付，`status=answered`）：
 
 ```bash
-python /skills/weekly-skill/scripts/sk_entry.py \
+python /skills/bohr-graphics/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 ```
 
-## 完整用法是两阶段
+## 可选覆盖（两阶段）
 
-脚本只做**确定性取证**；领域判断由执行 Agent 做，并需要回灌：
+默认单次运行就完成取证、成图与判断；仅当需要人工改写判断时才走下面这条覆盖路径：
 
 ```bash
 # 阶段 A：取证 + 产出任务单
-python /skills/weekly-skill/scripts/sk_entry.py \
+python /skills/bohr-graphics/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 cat /app/work/agent_tasks.json
 
@@ -22,16 +22,14 @@ cat /app/work/agent_tasks.json
 #   → /app/work/agent_judgement.json
 
 # 阶段 C：脚本校验引文并合并
-python /skills/weekly-skill/scripts/sk_entry.py \
+python /skills/bohr-graphics/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 ```
-
-只有走完阶段 B，`status` 才会从 `partial` 升到 `answered`。
 
 ## 手动复现
 
 ```bash
-cd /skills/weekly-skill
+cd /skills/bohr-graphics
 python scripts/sk_entry.py --input examples/demo-case --work /tmp/work --out /tmp/out
 cat /tmp/out/result.json
 cat /tmp/work/agent_tasks.json
