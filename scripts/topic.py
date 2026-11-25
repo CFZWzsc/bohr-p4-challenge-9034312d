@@ -1689,6 +1689,44 @@ def _produce_artifacts(family: str, case: dict[str, Any],
         res = ART.write_graphics_artifacts(out_dir, ir, case)
         files = res["files"]
         render = res.get("render") or {}
+        evidence_entries = (
+                [{
+                    "element_id": "node-%s" % e.get("entity_id"),
+                    "label": e.get("label"),
+                    "paragraph_id": e.get("paragraph_id", ""),
+                    "source_id": e.get("source_id", ""),
+                    "quote": e.get("quote", ""),
+                    "kind": e.get("kind", ""),
+                    "spec_id": e.get("entity_id"),
+                } for e in (ir.get("entities") or [])]
+                # 阶段节点与连线此前没有映射条目，导致 content_map 只覆盖部件层；
+                # 这里按 SVG 里真实的 id 补齐，使「图元 ↔ 映射」双向可核。
+                + [{
+                    "element_id": "node-%s" % st.get("step_id"),
+                    "label": st.get("label"),
+                    "paragraph_id": st.get("paragraph_id", ""),
+                    "source_id": st.get("source_id", ""),
+                    "quote": st.get("quote", ""),
+                    "kind": "step",
+                } for st in (ir.get("steps") or [])]
+                + [{
+                    "element_id": "edge-%s" % r.get("relation_id"),
+                    "label": "%s → %s" % (r.get("from_label", ""), r.get("to_label", "")),
+                    "paragraph_id": r.get("paragraph_id", ""),
+                    "source_id": r.get("source_id", ""),
+                    "quote": r.get("quote", ""),
+                    "kind": "relation",
+                } for r in (ir.get("relations") or [])]
+                + [{
+                    "element_id": "data-%03d" % (i + 1),
+                    "label": d.get("label") or d.get("value"),
+                    "paragraph_id": d.get("paragraph_id", ""),
+                    "source_id": d.get("source_id", ""),
+                    "quote": d.get("quote", ""),
+                    "kind": "data",
+                } for i, d in enumerate(ir.get("data") or [])]
+        )
+        map_check = _content_map_coverage(out_dir, files, evidence_entries)
         return {
             "editable_sources": files,
             "exports": [{
@@ -1746,47 +1784,12 @@ def _produce_artifacts(family: str, case: dict[str, Any],
             "compliance_checks": {
                 "status": "produced",
                 "file": "figure-export-checks.json",
-                "checks": (res.get("export_checks") or {}).get("checks", []),
+                "checks": list((res.get("export_checks") or {}).get("checks", []))
+                          + [map_check],
                 "manual_confirmation": (res.get("export_checks") or {}).get(
                     "manual_confirmation", {}),
             },
-            "evidence_map": (
-                [{
-                    "element_id": "node-%s" % e.get("entity_id"),
-                    "label": e.get("label"),
-                    "paragraph_id": e.get("paragraph_id", ""),
-                    "source_id": e.get("source_id", ""),
-                    "quote": e.get("quote", ""),
-                    "kind": e.get("kind", ""),
-                    "spec_id": e.get("entity_id"),
-                } for e in (ir.get("entities") or [])]
-                # 阶段节点与连线此前没有映射条目，导致 content_map 只覆盖部件层；
-                # 这里按 SVG 里真实的 id 补齐，使「图元 ↔ 映射」双向可核。
-                + [{
-                    "element_id": "node-%s" % st.get("step_id"),
-                    "label": st.get("label"),
-                    "paragraph_id": st.get("paragraph_id", ""),
-                    "source_id": st.get("source_id", ""),
-                    "quote": st.get("quote", ""),
-                    "kind": "step",
-                } for st in (ir.get("steps") or [])]
-                + [{
-                    "element_id": "edge-%s" % r.get("relation_id"),
-                    "label": "%s → %s" % (r.get("from_label", ""), r.get("to_label", "")),
-                    "paragraph_id": r.get("paragraph_id", ""),
-                    "source_id": r.get("source_id", ""),
-                    "quote": r.get("quote", ""),
-                    "kind": "relation",
-                } for r in (ir.get("relations") or [])]
-                + [{
-                    "element_id": "data-%03d" % (i + 1),
-                    "label": d.get("label") or d.get("value"),
-                    "paragraph_id": d.get("paragraph_id", ""),
-                    "source_id": d.get("source_id", ""),
-                    "quote": d.get("quote", ""),
-                    "kind": "data",
-                } for i, d in enumerate(ir.get("data") or [])]
-            ),
+            "evidence_map": evidence_entries,
             "deliverable_patch": {
                 "kind": "graphics_specification",
                 "summary": ("已生成真实的可编辑图形源文件与渲染预览："
@@ -2888,3 +2891,36 @@ def write_review_artifacts(result: dict[str, Any], state: dict[str, Any], out_di
         B.write_text(os.path.join(out_dir, "run-review.md"), "\n".join(lines) + "\n")
     except Exception:
         pass
+
+
+def _content_map_coverage(out_dir, files, entries):
+    """自检：figure.svg 里的每个语义 id 都要有映射条目，且每条映射都能在图里找到。
+
+    这是 r26 按 skills.sh `svg-figure` 的「映射即事实」思路补的机检：它不改变图形，
+    只把「content_map 是否真的覆盖了整张图」从人工承诺变成可核验的布尔值。
+    """
+    svg_name = ""
+    for item in files or []:
+        if item.get("format") == "svg":
+            svg_name = item.get("filename") or ""
+            break
+    path = os.path.join(out_dir, svg_name) if svg_name else ""
+    if not path or not os.path.isfile(path):
+        return {"check": "content_map_covers_figure", "pass": False,
+                "applied": {"reason": "figure.svg not found in the output directory"}}
+    svg = open(path, encoding="utf-8").read()
+    svg_ids = set(re.findall(r'id="([^"]+)"', svg))
+    mapped = {e.get("element_id") for e in entries or []}
+    semantic = {i for i in svg_ids
+                if not i.startswith("layer-")
+                and not re.match(r"^(ST\d+|E\d{3}|R\d{3})$", i)}
+    return {
+        "check": "content_map_covers_figure",
+        "pass": not (semantic - mapped) and not (mapped - svg_ids),
+        "applied": {
+            "map_entries": len(entries or []),
+            "svg_semantic_ids": len(semantic),
+            "in_svg_not_in_map": sorted(semantic - mapped)[:10],
+            "in_map_not_in_svg": sorted(mapped - svg_ids)[:10],
+        },
+    }
