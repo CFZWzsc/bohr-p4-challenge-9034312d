@@ -9,7 +9,7 @@ description: 当需要图形科研材料并产出可复核的结构化结果时�
 
 本题属于**graphics** 赛道。目标能力：把科研内容转成可执行的图形制作规格（图型、元素清单、坐标轴与单位、数据点、图例、配色），并给出真实渲染的 PNG 预览供复核。
 
-本 Skill 在 DeepSeek Harness 中被加载到 `/skills/weekly-skill`。
+本 Skill 在 DeepSeek Harness 中被加载到 `/skills/bohr-graphics`。
 Harness 会在 3 个固定科研案例上分别调用它；每个案例的输入是
 `/input/case.json`（含 `task_instruction` 与 `output_contract`）与同目录下的
 科研材料文件。
@@ -43,7 +43,7 @@ result.json（契约齐全）、图形规格、渲染预览 PNG
 
 ```bash
 # 在案例环境中执行（Harbor 会自动调用；手动复现同一条命令）
-python /skills/weekly-skill/scripts/sk_entry.py \
+python /skills/bohr-graphics/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 ```
 
@@ -60,7 +60,7 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 正常用法只有一条命令：
 
 ```bash
-python /skills/weekly-skill/scripts/sk_entry.py \
+python /skills/bohr-graphics/scripts/sk_entry.py \
   --input /input --work /app/work --out /app/output
 ```
 
@@ -203,7 +203,7 @@ python /skills/weekly-skill/scripts/sk_entry.py \
 不要伪造 `answered`。
 
 ```bash
-python /skills/weekly-skill/scripts/sk_selftest.py --input /input
+python /skills/bohr-graphics/scripts/sk_selftest.py --input /input
 ```
 
 ## 参考
