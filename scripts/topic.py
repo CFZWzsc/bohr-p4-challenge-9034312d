@@ -1750,14 +1750,43 @@ def _produce_artifacts(family: str, case: dict[str, Any],
                 "manual_confirmation": (res.get("export_checks") or {}).get(
                     "manual_confirmation", {}),
             },
-            "evidence_map": [{
-                "element_id": e.get("entity_id"),
-                "label": e.get("label"),
-                "paragraph_id": e.get("paragraph_id", ""),
-                "source_id": e.get("source_id", ""),
-                "quote": e.get("quote", ""),
-                "kind": e.get("kind", ""),
-            } for e in (ir.get("entities") or [])],
+            "evidence_map": (
+                [{
+                    "element_id": "node-%s" % e.get("entity_id"),
+                    "label": e.get("label"),
+                    "paragraph_id": e.get("paragraph_id", ""),
+                    "source_id": e.get("source_id", ""),
+                    "quote": e.get("quote", ""),
+                    "kind": e.get("kind", ""),
+                    "spec_id": e.get("entity_id"),
+                } for e in (ir.get("entities") or [])]
+                # 阶段节点与连线此前没有映射条目，导致 content_map 只覆盖部件层；
+                # 这里按 SVG 里真实的 id 补齐，使「图元 ↔ 映射」双向可核。
+                + [{
+                    "element_id": "node-%s" % st.get("step_id"),
+                    "label": st.get("label"),
+                    "paragraph_id": st.get("paragraph_id", ""),
+                    "source_id": st.get("source_id", ""),
+                    "quote": st.get("quote", ""),
+                    "kind": "step",
+                } for st in (ir.get("steps") or [])]
+                + [{
+                    "element_id": "edge-%s" % r.get("relation_id"),
+                    "label": "%s → %s" % (r.get("from_label", ""), r.get("to_label", "")),
+                    "paragraph_id": r.get("paragraph_id", ""),
+                    "source_id": r.get("source_id", ""),
+                    "quote": r.get("quote", ""),
+                    "kind": "relation",
+                } for r in (ir.get("relations") or [])]
+                + [{
+                    "element_id": "data-%03d" % (i + 1),
+                    "label": d.get("label") or d.get("value"),
+                    "paragraph_id": d.get("paragraph_id", ""),
+                    "source_id": d.get("source_id", ""),
+                    "quote": d.get("quote", ""),
+                    "kind": "data",
+                } for i, d in enumerate(ir.get("data") or [])]
+            ),
             "deliverable_patch": {
                 "kind": "graphics_specification",
                 "summary": ("已生成真实的可编辑图形源文件与渲染预览："
