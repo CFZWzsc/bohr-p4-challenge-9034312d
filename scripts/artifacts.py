@@ -78,13 +78,18 @@ _NUM_UNIT = re.compile(
     r"(?:/("
     r"wt%|mg/mL|g/L|nmol|min|nm|µm|μm|mm|cm|km|kg|mg|mM|µM|μM|nM|"
     r"meV|keV|mW|kHz|MHz|GHz|mL|µL|μL|kJ|MJ|ms|µs|%|m|g|M|K|W|V|"
-    r"mV|A|mA|kV|Hz|T|J|s|h|d|Pa|eV|cm2|cm\^2"
+    r"mV|A|mA|kV|Hz|T|J|s|h|d|Pa|eV|cm2|cm\^2|L|l"
     r"))?"
 )
 _STEP_HEAD = re.compile(
-    r"^\s*(?:[（(]?\s*(?:步骤|工序|阶段|第)\s*([0-9]{1,2}|[一二三四五六七八九十]+)"
-    r"[）)]?\s*[.、．:：]?|([0-9]{1,2})\s*[.、．)）]|"
-    r"(首先|然后|接着|随后|最后|再|第二步|第一步)|"
+    # 「第一步」「第 1 步」「步骤 2」「阶段三」都要连编号后缀一起吃掉，
+    # 否则正文会以「步，配制…」开头，步骤标签就只剩一个「步」。
+    r"^\s*(?:[（(]?\s*(?:第)\s*([0-9]{1,2}|[一二三四五六七八九十]+)"
+    r"\s*(?:步|阶段|工序|步骤)[）)]?\s*[.、．,:：，]?|"
+    r"[（(]?\s*(?:步骤|工序|阶段)\s*([0-9]{1,2}|[一二三四五六七八九十]+)"
+    r"\s*(?:步|阶段|工序|步骤)?[）)]?\s*[.、．,:：，]?|"
+    r"([0-9]{1,2})\s*[.、．)）]|"
+    r"(首先|然后|接着|随后|最后|再)|"
     r"(first|firstly|then|next|second|secondly|third|thirdly|finally|"
     r"lastly|subsequently|afterwards)\b)",
     re.IGNORECASE,
@@ -304,17 +309,65 @@ _ADVERBS = {
 }
 
 
-def _value_label(text: str, m: "re.Match[str]") -> str:
+def _value_label(text: str, m: "re.Match[str]",
+                 vocab: list[str] | None = None) -> str:
     """给一个「数值+单位」找它在句子里所修饰的对象。
 
-    优先**向前**看（材料常写成 "10 mg of the dried powder" / "2 mm PTFE tube"）；
-    向前没有明确对象时才**向后**看（"a flow rate of 1.5 mL/min"）。
+    先**向前**看（材料常写成 "10 mg of the dried powder" / "停留 20 min"），
+    向前没有明确对象时才**向后**看（"以 2 mL/min 的流量"）。
     只取材料里真实出现的词，不推测。
     """
-    fwd = _forward_value_label(text, m.end())
-    if fwd:
-        return fwd
-    return _backward_value_label(text, m.start())
+    back = _backward_value_label(text, m.start(), vocab)
+    if back:
+        return back
+    return _forward_value_label(text, m.end())
+
+
+def _cjk_value_tail(segment: str, vocab: list[str] | None = None) -> str:
+    """把数值前面的中文片段压成可读短语（CJK 之间不加空格）。
+
+    - 优先对齐到**最靠右的实体词**（光反应器 / 恒温槽 / 紫外灯），
+      这样 "反应液在光反应器中停留" → "光反应器停留"，
+      "循环水夹套与恒温槽相连以维持" → "恒温槽维持"。
+    - 没有实体词时，退化为去掉前导步骤标记与虚词的最后一段。
+    """
+    s = re.sub(r"[（）()\[\]【】《》\"'“”‘’]", "", segment or "")
+    s = re.sub(r"\s+", "", s)
+    s = s.strip("，。；、,.;:：")
+    if not s:
+        return ""
+    # 同一子句里若还有**前一个数值**，只保留它之后的部分（"…375 nm 照射" → "照射"）
+    last_num = None
+    for mm in re.finditer(r"\d+(?:\.\d+)?\s*[A-Za-z%°/]*", s):
+        last_num = mm
+    if last_num is not None:
+        s = s[last_num.end():]
+    if not s:
+        return ""
+    best = ""
+    if vocab:
+        best_end = -1
+        for term in vocab:
+            if not term or not _is_cjk(term):
+                continue
+            idx = s.rfind(term)
+            if idx >= 0 and idx + len(term) > best_end:
+                best_end = idx + len(term)
+                best = term
+    if best:
+        tail = s[s.rfind(best) + len(best):]
+        tail = re.sub(r"^(?:中|内|上|下|外)", "", tail)
+        tail = re.sub(r"^(?:相连|连接|连通|相接)", "", tail)
+        tail = re.sub(r"^(?:以|并|且)", "", tail)
+        out = best + tail
+    else:
+        out = s
+    out = re.sub(r"^(?:第[0-9一二三四五六七八九十]+步|步骤|工序|阶段)+", "", out)
+    out = out.strip("在向将把由从至到与和及的了并且以对为是再经被让使于")
+    out = re.sub(r"^(?:开启|关闭|打开|启动|设置|调节|安装|连接|采用|使用)+", "", out)
+    if not out or not _is_cjk(out):
+        return ""
+    return out[:14]
 
 
 # 向前看时用来切分名词短语的终止词
@@ -395,8 +448,8 @@ def _forward_value_label(text: str, num_end: int) -> str:
     rest = tail[m.end():]
     if not rest:
         return ""
-    # "of X" / "的 X"：X 才是被测量的对象
-    mm = re.match(r"^(?:of|的)\s+", rest, re.IGNORECASE)
+    # "of X" / "的 X"：X 才是被测量的对象（中文的「的」后面通常不留空格）
+    mm = re.match(r"^(?:of\s+|的\s*)", rest, re.IGNORECASE)
     if mm:
         rest = rest[mm.end():]
     else:
@@ -409,6 +462,18 @@ def _forward_value_label(text: str, num_end: int) -> str:
     cut = re.search(r"[.。;；!！?？]\s+", rest)
     if cut:
         rest = rest[:cut.start()]
+    # 中文：取紧跟数值的连续汉字，遇到"把/将/在/向/以…"等虚词即停
+    if _is_cjk(rest):
+        seg_m = re.match(r"^[一-鿿]+", rest)
+        if not seg_m:
+            return ""
+        seg = seg_m.group(0)
+        stop = "把将并向在以经到至于为是的了并且与和及"
+        for i, ch in enumerate(seg):
+            if ch in stop:
+                seg = seg[:i]
+                break
+        return seg[:14]
     # 取名词短语
     out: list[str] = []
     for wm in re.finditer(r"[A-Za-z一-鿿][A-Za-z0-9\-]*", rest):
@@ -423,7 +488,7 @@ def _forward_value_label(text: str, num_end: int) -> str:
     # 尾部若是停用词，去掉
     while out and out[-1].lower() in _VAL_STOP:
         out.pop()
-    np = _clean_np(" ".join(out))
+    np = _clean_np(_join_tokens(out))
     if len(np) < 2 or not re.search(r"[A-Za-z一-鿿]", np):
         return ""
     # 纯数字/单位串不算标签
@@ -432,9 +497,14 @@ def _forward_value_label(text: str, num_end: int) -> str:
     return np
 
 
-def _backward_value_label(text: str, num_start: int) -> str:
+def _backward_value_label(text: str, num_start: int,
+                          vocab: list[str] | None = None) -> str:
     """数值**前面**的名词短语（"a flow rate of 1.5 mL/min" → "flow rate"）。"""
     before = text[:num_start]
+    # 中文：只取数值所在的**最后一个子句**，避免把上一句的宾语拖进来
+    segment = re.split(r"[。；;，,、！？!?\n]", before)[-1]
+    if _is_cjk(segment):
+        return _cjk_value_tail(segment, vocab)
     words = [t[0] for t in _tokens_with_pos(before)]
     # 1) 跳过填充词与裸数字
     i = len(words)
@@ -469,7 +539,7 @@ def _backward_value_label(text: str, num_start: int) -> str:
         picked.append(core)
         j -= 1
     picked.reverse()
-    np = _clean_np(" ".join(picked))
+    np = _clean_np(_join_tokens(picked))
     if len(np) < 2 or not re.search(r"[A-Za-z一-鿿]", np):
         return ""
     return np
@@ -685,16 +755,97 @@ def _noun_phrase(text: str) -> str:
 
 
 def _split_list(text: str) -> list[str]:
-    """把列举拆成若干项：「a, b, and c」 → [a, b, c]。"""
+    """把列举拆成若干项：「a, b, and c」/「A、B、C 与 D」 → [a, b, c, D]。"""
     s = re.sub(r"\s+and\s+", ", ", (text or ""), flags=re.IGNORECASE)
+    s = re.sub(r"\s*以及\s*", ", ", s)
     s = re.sub(r"\s*、\s*", ", ", s)
     s = re.sub(r"\s*[,，;；]\s*", ", ", s)
+    s = re.sub(r"\s*(?:与|和|及)\s*", ", ", s)
     out = []
     for part in s.split(","):
         item = _noun_phrase(part)
         if item and len(item) >= 2:
             out.append(item)
     return out
+
+
+# 容器词 / 残句：绝不能变成图面实体（装置、系统、部件、步……）
+_CONTAINER_WORDS = (
+    "装置", "系统", "部件", "组件", "组成部分", "主要部件", "设备", "平台",
+    "技术路线", "步骤", "流程", "工艺", "方法", "总成", "整机", "单元",
+    "反应体系", "实验装置",
+)
+
+# 中文装置/部件名几乎都以这些词尾收束；用它们在兜底阶段挡掉流体与动作短语
+_DEVICE_SUFFIX = re.compile(
+    r"(?:瓶|泵|器|灯|膜|套|槽|管|阀|罐|炉|柱|机|箱|池|釜|塔|筛|网|片|板|"
+    r"仪|表|源|台|头|探头|传感器|电极)$"
+)
+
+
+def _is_container_label(label: str) -> bool:
+    """判断候选是不是「装置 / 四个主要部件 / 步」这类容器词或没拆干净的残句。"""
+    raw = label or ""
+    s = re.sub(r"[\s，。；、,.;:：（）()\[\]【】\"'`]", "", raw)
+    if not s or len(s) <= 1:
+        return True
+    if s in _CONTAINER_WORDS:
+        return True
+    for w in _CONTAINER_WORDS:
+        if w in s:
+            return True
+    if "：" in raw or ":" in raw:
+        return True
+    if re.search(r"(?:组成|构成|分为|包括|包含)", s):
+        return True
+    return False
+
+
+def _looks_like_device(label: str) -> bool:
+    """中文实体必须是装置/部件（瓶/泵/器/灯/膜/套/槽/管…），不是流体或动作。"""
+    s = re.sub(r"[\s，。；、,.;:：（）()\[\]【】]", "", label or "")
+    if not _is_cjk(s):
+        return True       # 英文抽取路径保持原有行为
+    return bool(_DEVICE_SUFFIX.search(s))
+
+
+# --- 中文结构化句式（枚举 / 内置 / 相连 / 串联 / 经…进入） ----------------
+_CN_COMPOSE_COLON = re.compile(
+    r"(?P<parent>[^，。；：,;:]{1,24}?)\s*由(?P<mid>[^，。；：,;:]{0,24}?)"
+    r"(?:组成|构成)\s*[：:]\s*(?P<items>[^。；;\n]{2,120})"
+)
+_CN_COMPOSE_TAIL = re.compile(
+    r"(?P<parent>[^，。；：,;:]{1,24}?)\s*由\s*(?P<items>[^。；;\n]{2,120}?)"
+    r"\s*(?:组成|构成)"
+)
+_CN_CONTAIN = re.compile(
+    r"(?P<parent>[^，。；：,;:]{1,24}?)\s*"
+    r"(?:内置|配有|配备|安装有|装有|设有|带有)\s*"
+    r"(?P<items>[^，。；：,;:\n]{2,80})"
+)
+_CN_LINK = re.compile(
+    r"(?P<a>[^，。；：,;:与和及]{1,24}?)\s*(?:与|和|及)\s*"
+    r"(?P<b>[^，。；：,;:]{1,24}?)\s*(?:相连|连接|连通|相接|相连接)"
+)
+_CN_SERIES = re.compile(
+    r"(?P<a>[^，。；：,;:]{1,24}?)\s*的?\s*"
+    r"(?:出口|入口|出水口|进水口|顶部|底部|下端|上端)?\s*处?\s*"
+    r"(?:串联|串接|接入|连通|连接)\s*(?:着|了)?\s*"
+    r"(?:一台|一个|一套|一只|一部)?\s*(?P<b>[^，。；：,;:\n]{2,24})"
+)
+_CN_FLOW_VIA = re.compile(
+    r"(?P<src>[^，。；：,;:]{1,24}?)\s*中(?:的)?\s*"
+    r"[^，。；：,;:]{0,20}?\s*经\s*(?P<via>[^，。；：,;:]{1,20}?)\s*"
+    r"(?:进入|流入|送入|通入|泵入|导入|接入|送至|输送至|通向)\s*"
+    r"(?P<dst>[^，。；：,;:]{1,20})"
+)
+# 指代补全：材料写「反应后的产物」，其源是上句点名的反应器
+_CN_OUT_SUBJECT = re.compile(r"^(?:反应后的产物|反应产物|产物|反应液|出水|滤液|上清液)")
+_CN_OUT_FLOW = re.compile(
+    r"(?:流入|进入|收入|送入|收集到|导入|转入|泵入)\s*"
+    r"(?P<dst>[^，。；：,;:\n]{2,24})"
+)
+_CN_REACTOR = re.compile(r"(?:光反应器|反应器|反应釜|反应柱|反应塔|反应池)$")
 
 def _mine_entities(sentence: str) -> list[str]:
     """材料没写连接时的兜底：挖出句子里**被点名**的技术对象。
@@ -712,14 +863,14 @@ def _mine_entities(sentence: str) -> list[str]:
         if not re.search(r"[A-Z]{2}", tok):   # 只收全大写缩写（PDMS / SEM）
             continue
         out.append(tok)
-    # 带单位的技术量
-    for m in _NUM_UNIT.finditer(sentence):
-        out.append(m.group(0).strip())
+    # 带单位的技术量只作数据映射（ir["data"]），不当作图面实体；
     # 装置/材料类词尾
     for m in re.finditer(
             r"\b([a-z][a-z\-]{2,20}(?:cell|column|reactor|filter|membrane|chamber|"
             r"electrode|sensor|module|unit|stage|probe|pump|valve|reservoir|"
-            r"cathode|anode|matrix|hydrogel|fiber|sheet|film))\b",
+            r"cathode|anode|matrix|hydrogel|fiber|sheet|film|bottle|flask|bath|"
+            r"oven|dryer|press|tank|tube|pipe|detector|collector|separator|"
+            r"electrolyte|slurry|coating|blade|substrate|layer))\b",
             sentence, re.IGNORECASE):
         out.append(m.group(1))
     seen: set[str] = set()
@@ -857,6 +1008,112 @@ def extract_structure(paras: list[dict[str, Any]],
             "quote": s["text"][:220],
         })
 
+    # --- 结构化句式（先拆枚举，再走通用连接，避免容器词进图） --------------
+    handled: dict[str, list[tuple[int, int]]] = {}
+
+    def _mark(s: dict[str, Any], a: int, b: int) -> None:
+        handled.setdefault(s["sentence_id"], []).append((a, b))
+
+    def _consumed(s: dict[str, Any], a: int, b: int) -> bool:
+        return any(a < y and b > x for x, y in handled.get(s["sentence_id"], []))
+
+    def _add_device(label: str, kind: str, s: dict[str, Any]) -> dict[str, Any] | None:
+        lab = _trim_label(_noun_phrase(label), 24)
+        if not lab or _is_container_label(lab) or not _looks_like_device(lab):
+            return None
+        return _entity(lab, kind, s)
+
+    def _add_parts(parent_label: str, items_text: str, s: dict[str, Any],
+                   rel: bool) -> None:
+        clean_parent = re.sub(
+            r"(?:外壁|内壁|侧壁|顶部|底部|上端|下端|内部|外部)$", "",
+            (parent_label or "").strip())
+        parent = _add_device(clean_parent, "assembly", s) if rel else None
+        for part in _split_list(items_text):
+            child = _add_device(part, "component", s)
+            if child is not None and parent is not None:
+                _add_relation(parent, child, "composition",
+                              "composition stated in the material text", s)
+
+    for s in sents:
+        text = s["text"]
+        # 「装置由四个主要部件组成：A、B、C 与 D」
+        m = _CN_COMPOSE_COLON.search(text)
+        if m:
+            _mark(s, m.start(), m.end())
+            _add_parts(m.group("parent"), m.group("items"), s, rel=True)
+        else:
+            # 「由 A、B、C 与 D 组成」
+            m = _CN_COMPOSE_TAIL.search(text)
+            if m:
+                _mark(s, m.start(), m.end())
+                _add_parts(m.group("parent"), m.group("items"), s, rel=True)
+
+        # 「X 内置 A 与 B」/「X 配有 Y」
+        for m in _CN_CONTAIN.finditer(text):
+            _mark(s, m.start(), m.end())
+            _add_parts(m.group("parent"), m.group("items"), s, rel=True)
+
+        # 「A 与 B 相连」
+        for m in _CN_LINK.finditer(text):
+            a = _add_device(m.group("a"), "node", s)
+            b = _add_device(m.group("b"), "node", s)
+            if a is not None and b is not None:
+                _mark(s, m.start(), m.end())
+                _add_relation(a, b, "connection",
+                              "connection stated in the material text", s)
+
+        # 「A 的出口处串联(一台) B」
+        for m in _CN_SERIES.finditer(text):
+            a = _add_device(m.group("a"), "node", s)
+            b = _add_device(m.group("b"), "node", s)
+            if a is not None and b is not None:
+                _mark(s, m.start(), m.end())
+                _add_relation(a, b, "connection",
+                              "series connection stated in the material text", s)
+
+        # 「A 中的…经 B 进入 C」
+        for m in _CN_FLOW_VIA.finditer(text):
+            src = _add_device(m.group("src"), "node", s)
+            via = _add_device(m.group("via"), "node", s)
+            dst = _add_device(m.group("dst"), "node", s)
+            if src is not None and via is not None:
+                _mark(s, m.start(), m.end())
+                _add_relation(src, via, "flow",
+                              "flow path stated in the material text ('经…')", s)
+                if dst is not None:
+                    _add_relation(via, dst, "flow",
+                                  "flow path stated in the material text ('进入…')", s)
+
+    # --- 指代补全：材料写「反应后的产物」，源是同一段上一句点名的反应器 -----
+    last_reactor: dict[str, dict[str, Any]] = {}
+    for s in sents:
+        text = s["text"]
+        if _CN_OUT_SUBJECT.match(text):
+            fm = _CN_OUT_FLOW.search(text)
+            reactor = last_reactor.get(s["paragraph_id"])
+            if fm and reactor is not None:
+                dst = _add_device(fm.group("dst"), "node", s)
+                if dst is not None:
+                    _add_relation(
+                        reactor, dst, "flow",
+                        "anaphora: '反应后的产物' resolved to the reactor named "
+                        "earlier in the same paragraph", s)
+                    uncertainties.append({
+                        "kind": "anaphora_resolution",
+                        "item": f"{reactor['label']} → {dst['label']}",
+                        "detail": ("the sentence names only '反应后的产物' as the "
+                                   "source; it was resolved to the reactor named "
+                                   "earlier in the same paragraph"),
+                        "resolution": ("the edge is drawn from that reactor and "
+                                       "should be confirmed by a human reviewer"),
+                    })
+        for ent in list(entities.values()):
+            if ent.get("paragraph_id") != s["paragraph_id"]:
+                continue
+            if _CN_REACTOR.search(str(ent.get("label") or "")) and ent["label"] in text:
+                last_reactor[s["paragraph_id"]] = ent
+
     # --- 步骤 ------------------------------------------------------------
     for s in sents:
         m = _STEP_HEAD.match(s["text"])
@@ -869,7 +1126,8 @@ def extract_structure(paras: list[dict[str, Any]],
         steps.append({
             "step_id": f"ST{len(steps) + 1:02d}",
             "order": len(steps) + 1,
-            "marker": re.sub(r"\s+", " ", m.group(0).strip()),
+            "marker": re.sub(r"[，,。.、;；:：\s]+$", "",
+                             re.sub(r"\s+", " ", m.group(0).strip())),
             "label": _step_label(
                 (re.split(r"[，,；;。]", body)[0].strip()
                  if len(re.split(r"[，,；;。]", body)[0].strip()) >= 8 else body)),
@@ -902,6 +1160,9 @@ def extract_structure(paras: list[dict[str, Any]],
 
         for kind in ("composition", "connection", "flow", "sequence"):
             for (cs, ce, kw) in _find_connector(text, kind):
+                # 已经被上面的结构化句式消费掉的片段不再重复解析
+                if _consumed(s, cs, ce):
+                    continue
                 # 关键词覆盖的词索引区间
                 idxs = [i for i, (_, a, b) in enumerate(toks)
                         if a < ce and b > cs]
@@ -933,25 +1194,8 @@ def extract_structure(paras: list[dict[str, Any]],
                 _add_relation(a, b, kind, f"{kind} stated in the material text "
                                           f"(keyword: {kw!r})", s)
 
-    # --- 步骤主体（把步骤也变成可排布的节点） ----------------------------
-    for st in steps:
-        label = st["label"]
-        if not label:
-            continue
-        head = re.split(r"[，,：:；;]|[（(]", label)[0]
-        # 去掉开头的"数量 + of"（"10 mg of the dried powder was dispersed"
-        # 作为节点名没意义，节点名应该是动作对象）
-        head = re.sub(r"^[\d.]+\s*[^\s]+\s+(?:of|的)\s+(?:the\s+)?", "",
-                      head).strip()
-        # 去掉尾部助动词（"... was dispersed" → "... dispersed"）
-        head = re.sub(r"\s+(was|were|is|are|be|been)\s+(\w+)$", r" \2", head)
-        head = _trim_label(head, 28)
-        if not head:
-            continue
-        s = {"paragraph_id": st["paragraph_id"], "source_id": st["source_id"],
-             "text": st["quote"]}
-        ent = _entity(head, "step", s)
-        st["entity_id"] = ent["entity_id"]
+    # 步骤不再塞进 entities：entities 只放材料点名的真实部件（≤10），
+    # 步骤由 _layout / build_svg 直接从 ir["steps"] 单独排成一列。
 
     # --- 实体兜底（材料没写连接时，仍要画出材料点名的对象） --------------
     if not entities:
@@ -962,10 +1206,12 @@ def extract_structure(paras: list[dict[str, Any]],
                 break
 
     # --- 数值（数据映射） ------------------------------------------------
+    cjk_vocab = [str(e.get("label") or "") for e in entities.values()
+                 if _is_cjk(str(e.get("label") or ""))]
     for p in paras:
         text = p.get("text") or ""
         for m in _NUM_UNIT.finditer(text):
-            label = _value_label(text, m)
+            label = _value_label(text, m, cjk_vocab)
             unit = m.group(2)
             if m.group(3):
                 unit = f"{unit}/{m.group(3)}"
@@ -1079,26 +1325,35 @@ def _layout(ir: dict[str, Any]) -> dict[str, Any]:
                 changed = True
         if not changed:
             break
-    # 步骤节点单独占最左一列（纵向流程），普通节点从第 1 列开始按层级横向排
-    # ⚠️ 两类节点必须用**互不重叠的行槽**，否则 step_pos 与 col_count 会撞车，
-    #    导致一个盒子被另一个完全盖住（曾经发生过）。
-    step_ents = {st.get("entity_id") for st in ir["steps"] if st.get("entity_id")}
-    nodes = []
-    step_pos = 0
+    # 步骤单独占最左一列（纵向流程），普通节点从第 1 列开始按层级横向排。
+    # 步骤盒子的来源是 ir["steps"]，**不写进 entities**——entities 只放真实部件。
+    step_nodes: list[dict[str, Any]] = []
+    for k, st in enumerate(ir.get("steps") or []):
+        label = str(st.get("label") or "").strip()
+        if not label:
+            continue
+        step_nodes.append({
+            "entity": {
+                "entity_id": str(st.get("step_id") or f"ST{k + 1:02d}"),
+                "label": label,
+                "kind": "step",
+                "paragraph_id": st.get("paragraph_id", ""),
+                "source_id": st.get("source_id", ""),
+                "quote": st.get("quote", ""),
+            },
+            "x": MARGIN, "y": 190 + k * ROW_GAP,
+            "col": 0, "row": k, "layer": "step",
+        })
+    nodes: list[dict[str, Any]] = list(step_nodes)
     col_count: dict[int, int] = {}
     for e in ents:
         eid = e["entity_id"]
-        if eid in step_ents:
-            nodes.append({"entity": e, "x": MARGIN, "y": 190 + step_pos * ROW_GAP,
-                          "col": 0, "row": step_pos, "layer": "step"})
-            step_pos += 1
-        else:
-            c = 1 + level.get(eid, 0)
-            r = col_count.get(c, 0)
-            col_count[c] = r + 1
-            nodes.append({"entity": e, "x": MARGIN + c * COL_GAP,
-                          "y": 190 + r * ROW_GAP, "col": c, "row": r,
-                          "layer": "node"})
+        c = 1 + level.get(eid, 0)
+        r = col_count.get(c, 0)
+        col_count[c] = r + 1
+        nodes.append({"entity": e, "x": MARGIN + c * COL_GAP,
+                      "y": 190 + r * ROW_GAP, "col": c, "row": r,
+                      "layer": "node"})
     return {"nodes": nodes, "succ": succ, "level": level}
 
 
@@ -2316,7 +2571,9 @@ def write_export_checks(out_dir: str, ir: dict[str, Any], case: dict[str, Any],
         str(pdf_record.get("method") or "unknown"),
         {"is_vector": bool(pdf_record.get("vector")),
          "page_pt": pdf_record.get("page_pt"),
-         "role": "vector export of figure.svg"})
+         "role": pdf_record.get("role") or (
+             "vector export of figure.svg" if pdf_record.get("vector")
+             else "PDF export of figure.svg — raster page in this environment")})
     target_formats = {
         "svg": svg_entry,
         "png": png_entry,
@@ -2567,8 +2824,8 @@ def write_export_checks(out_dir: str, ir: dict[str, Any], case: dict[str, Any],
     # --- 人工确认 + preflight -----------------------------------------
     manual_confirmation = {
         "status": "pending_human_review",
-        "confirmed_by": None,
-        "confirmed_at": None,
+        "confirmed_by": "",
+        "confirmed_at": "",
         "note": ("the checks in this file are automated; the items below need a "
                  "human reviewer and are NOT confirmed here"),
         "checklist": [
